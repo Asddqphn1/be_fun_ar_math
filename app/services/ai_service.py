@@ -1,16 +1,26 @@
 import json
 import os
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from langchain.chat_models import init_chat_model
+from os import getenv
+
 from app.models import QuestionTemplate
 
 load_dotenv()
 
 # Setup Client
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-client = genai.Client(api_key=GOOGLE_API_KEY)
-MODEL_ID = "gemini-flash-latest"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+model = init_chat_model(
+    model="xiaomi/mimo-v2-flash:free",
+    model_provider="openai",
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": getenv("YOUR_SITE_URL"),
+        "X-Title": getenv("YOUR_SITE_NAME"),
+    }
+)
 
 def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     """
@@ -39,11 +49,11 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     
     INSTRUKSI:
     1. Buat soal baru yang setara dengan Level {template.difficulty}.
-    2. Ubah angka dan cerita, tapi logika penyelesaian tetap setara.
+    2. Ubah angka dan cerita lebih natural dan lucu, tapi logika penyelesaian tetap setara.
     3. Output WAJIB JSON murni.
     4. Field 'difficulty' HARUS berupa ANGKA integer ({template.difficulty}), JANGAN string.
     
-    FORMAT JSON RESPONSE:
+    FORMAT JSON RESPONSE PERSIS TANPA TAMBAHAN APAPUN SEPERTI MARKDOWN:
     {{
         "topic": "{template.topic}",
         "difficulty": {template.difficulty},
@@ -58,29 +68,11 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     """
 
     try:
-        # 3. Panggil Google Gemini
-        response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
-        
-        if response.text:
-            result = json.loads(response.text)
-            
-            # 4. Tambahkan Info Token (Fitur Monitoring)
-            usage = response.usage_metadata
-            total_tok = usage.total_token_count if usage else 0
-            
-            # Kita selipkan info teknis ini untuk debugging/log
-            result["meta_info"] = f"Model: {MODEL_ID} | Level: {template.difficulty} | Token Used: {total_tok}"
-            
-            return result
-        else:
-            raise Exception("Response AI kosong")
-
+        response = model.invoke(prompt)
+        ai_text = response.content.strip()
+        ai_json = json.loads(ai_text)
+        return ai_json
+    
     except Exception as e:
         print(f"Error AI Service: {e}")
         # Return object darurat biar server gak crash
