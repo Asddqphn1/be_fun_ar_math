@@ -1,12 +1,15 @@
+from typing import List
 import random
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, func, select
 from datetime import datetime
 
+from app.core.depedencies import NilaiServicesDepedencies
 from app.database import get_session
 from app.models import AnswerGenerated, ExamQuestion, OptionLabelEnum, QuestionGenerated, QuestionTemplate, User, ExamSession, ExamStatusEnum
 from app.routes.auth import get_current_user
-from app.schemas.ujian import ExamQuestionResponse, ExamSessionResponse, NextQuestionRequest, StartExamRequest, SubmitAnswerRequest, SubmitAnswerResponse
+from app.schemas.base_schemas import BaseResponse
+from app.schemas.ujian_request import ExamQuestionResponse, ExamSessionResponse, ExamValuesUsers, NextQuestionRequest, StartExamRequest, SubmitAnswerRequest, SubmitAnswerResponse
 from app.services.ai_service import generate_soal_with_ai # Import Satpam
 
 MAX_QUESTIONS = 10
@@ -253,3 +256,25 @@ def submit_answer(
         current_score=exam_session.total_score,
         next_level=exam_session.current_difficulty_level
     )
+
+
+@router.get("/nilai", response_model=List[ExamValuesUsers])
+def getNilai(services: NilaiServicesDepedencies):
+    return services.getNilai()
+
+
+@router.get("/nilai/{user_id}", response_model=BaseResponse[List[ExamValuesUsers]])
+def getNilaiByUserId(user_id: int, services: NilaiServicesDepedencies):
+    hasil = services.getNilaiByUserId(user_id)
+    
+    if not hasil:
+        raise HTTPException(status_code=404, detail="Data nilai tidak ditemukan untuk user ini")
+    
+    return BaseResponse(
+        success="true",
+        message="Data nilai berhasil ditemukan",
+        data=hasil
+    )
+
+
+

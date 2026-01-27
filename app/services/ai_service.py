@@ -49,11 +49,11 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     
     INSTRUKSI:
     1. Buat soal baru yang setara dengan Level {template.difficulty}.
-    2. Ubah angka dan cerita lebih natural dan lucu, tapi logika penyelesaian tetap setara.
+    2. Ubah angka dan cerita lebih natural dan lucu ada punchlinenya, tapi logika penyelesaian tetap setara.
     3. Output WAJIB JSON murni.
     4. Field 'difficulty' HARUS berupa ANGKA integer ({template.difficulty}), JANGAN string.
     
-    FORMAT JSON RESPONSE PERSIS TANPA TAMBAHAN APAPUN SEPERTI MARKDOWN:
+    FORMAT JSON RESPONSE PERSIS TANPA TAMBAHAN SYNTAX MARKDOWN SEPERTI ```json:
     {{
         "topic": "{template.topic}",
         "difficulty": {template.difficulty},
@@ -70,7 +70,10 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     try:
         response = model.invoke(prompt)
         ai_text = response.content.strip()
-        ai_json = json.loads(ai_text)
+
+        cleaned_text = ai_text.replace("```json", "").replace("```", "").strip()
+        print(f"AI Response: {ai_text}")
+        ai_json = json.loads(cleaned_text)
         return ai_json
     
     except Exception as e:

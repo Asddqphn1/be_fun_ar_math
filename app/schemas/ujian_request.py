@@ -34,3 +34,16 @@ class SubmitAnswerResponse(BaseModel):
     message: str
     current_score: float
     next_level: int # Kasih tau user dia naik/turun level
+
+class DataUser(BaseModel):
+    full_name : str
+    email : str
+
+
+class ExamValuesUsers(BaseModel):
+    start_time : datetime
+    end_time : datetime
+    topic : str
+    status: str
+    total_score : int
+    user: DataUser
