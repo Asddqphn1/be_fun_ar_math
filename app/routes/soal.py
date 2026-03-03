@@ -19,7 +19,7 @@ router = APIRouter(
 
 @router.get("/", response_model=List[QuestionResponse])
 def getAllSoal(session: Session= Depends(get_session)):
-    soal = select(QuestionTemplate)
+    soal = select(QuestionTemplate) 
     results = session.exec(soal).all()
     return results
 

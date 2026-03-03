@@ -1,6 +1,7 @@
 from sqlmodel import SQLModel, create_engine, Session
 from typing import Generator
 
+
 DATABASE_URL = "postgresql://postgres:12345@localhost:5432/math_app_db"
 
 engine = create_engine(DATABASE_URL, echo=True)
