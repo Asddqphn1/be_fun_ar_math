@@ -99,6 +99,7 @@ class ExamSession(SQLModel, table=True):
     
     status: ExamStatusEnum = Field(default=ExamStatusEnum.ONGOING)
     total_score: float = Field(default=0.0)
+    current_batch_index: int = Field(default=1)
     
     user: Optional[User] = Relationship(back_populates="exam_sessions")
     exam_questions: List["ExamQuestion"] = Relationship(back_populates="exam_session")
@@ -112,6 +113,8 @@ class ExamQuestion(SQLModel, table=True):
     
     exam_session_id: int = Field(foreign_key="exam_sessions.id")
     generated_question_id: int = Field(foreign_key="generated_questions.id")
+
+    batch_number: int = Field(default=1)
     
     # Jawaban user (Bisa kosong dulu pas soal baru dikirim ke FE)
     user_answer_label: Optional[OptionLabelEnum] = Field(default=None)

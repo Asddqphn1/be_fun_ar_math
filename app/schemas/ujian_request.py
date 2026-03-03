@@ -1,44 +1,60 @@
+# app/schemas/ujian_request.py
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict
-
+from typing import List, Optional
+from pydantic import BaseModel
 from app.models import OptionLabelEnum
 
+# --- SCHEMA DATA SOAL PER ITEM ---
+class OptionResponse(BaseModel):
+    label: str
+    text: str
 
+class QuestionItem(BaseModel):
+    exam_question_id: int
+    text: str
+    difficulty: int
+    options: List[OptionResponse]
+
+# --- RESPONSE BATCH (Dikirim ke Flutter) ---
+class ExamBatchResponse(BaseModel):
+    session_id: int
+    batch_index: int # Batch ke-1, 2, atau 3
+    questions: List[QuestionItem]
+    message: str
+    is_finished: bool = False # Kalau true, frontend tampilin nilai
+
+# --- REQUEST START ---
 class StartExamRequest(BaseModel):
-    topic: str # User mau ujian topik apa? (Misal: "Segitiga")
+    topic: str
 
-class ExamSessionResponse(BaseModel):
+# --- REQUEST SUBMIT BATCH (Dari Flutter) ---
+class AnswerItem(BaseModel):
+    exam_question_id: int
+    answer_label: OptionLabelEnum
+    time_seconds: int = 0  # Waktu menjawab soal ini (dalam detik)
+
+class SubmitBatchRequest(BaseModel):
     session_id: int
-    topic: str # Kita simpan topik ini di sesi biar gak lupa (NOTE: Nanti kita bahas cara simpannya)
-    start_time: datetime
-    status: str
+    answers: List[AnswerItem] # List jawaban user (3 atau 4 item)
+
+# --- RESPONSE HASIL SUBMIT ---
+class SubmitBatchResponse(BaseModel):
+    batch_index_just_finished: int
+    score_gained: float
+    correct_count: int
+    total_score: float
+    next_level: int
     message: str
-
-class NextQuestionRequest(BaseModel):
-    session_id: int
-
-class ExamQuestionResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True) # Biar bisa baca object DB
+    avg_time_seconds: float = 0.0  # Rata-rata waktu menjawab per soal (detik)
+    time_bonus: float = 0.0  # Bonus skor dari kecepatan menjawab
     
-    exam_question_id: int # ID Tracking (Penting buat submit jawaban)
-    question: dict # Isinya detail soal (teks, pilihan ganda)
+    # Data Batch Berikutnya (Kalau belum selesai)
+    next_batch: Optional[ExamBatchResponse] = None
 
-
-class SubmitAnswerRequest(BaseModel):
-    exam_question_id: int # ID soal yang mau dijawab
-    answer_label: OptionLabelEnum # Jawaban user (A/B/C/D)
-
-class SubmitAnswerResponse(BaseModel):
-    is_correct: bool
-    correct_label: str
-    message: str
-    current_score: float
-    next_level: int # Kasih tau user dia naik/turun level
-
+# ... Schema User/Nilai lama tetep ada di bawah ...
 class DataUser(BaseModel):
     full_name : str
     email : str
-
 
 class ExamValuesUsers(BaseModel):
     start_time : datetime
