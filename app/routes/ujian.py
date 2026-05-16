@@ -6,7 +6,7 @@ from datetime import datetime
 from app.core.depedencies import NilaiServicesDepedencies
 from app.database import get_session
 from app.helper.generated_helper import _generate_batch_questions
-from app.models import AnswerGenerated, ExamQuestion, User, ExamSession, ExamStatusEnum
+from app.models import AnswerGenerated, ExamQuestion, User, ExamSession, ExamStatusEnum, QuestionGenerated
 from app.routes.auth import get_current_user
 from app.schemas.base_schemas import BaseResponse
 from app.schemas.ujian_request import (
@@ -36,9 +36,56 @@ def start_exam(
     )).first()
     
     if ongoing:
-        # Opsional: Bisa dipaksa finish atau return error
-        # Kita return error biar clean
-        raise HTTPException(status_code=400, detail="Selesaikan ujian sebelumnya dulu!")
+        # Cari soal-soal yang belum dijawab di sesi ini
+        unanswered_questions = session.exec(select(ExamQuestion).where(
+            ExamQuestion.exam_session_id == ongoing.id,
+            ExamQuestion.user_answer_label == None
+        )).all()
+        
+        if unanswered_questions:
+            # Hitung riwayat skor & jawaban user di sesi ini (sebelum terputus)
+            answered_questions = session.exec(select(ExamQuestion).where(
+                ExamQuestion.exam_session_id == ongoing.id,
+                ExamQuestion.user_answer_label != None
+            )).all()
+            
+            past_correct = sum(1 for eq in answered_questions if eq.is_correct)
+            past_answered = len(answered_questions)
+            
+            # REKONSTRUKSI SOAL UNTUK DILANJUTKAN USER
+            formatted_questions = []
+            for eq in unanswered_questions:
+                # Ambil detail soal
+                gen_q = session.get(QuestionGenerated, eq.generated_question_id)
+                # Ambil pilihan ganda
+                answers_db = session.exec(select(AnswerGenerated).where(
+                    AnswerGenerated.question_generated_id == gen_q.id
+                )).all()
+                formatted_options = [
+                    {"label": a.option_label, "text": a.option_text} for a in answers_db
+                ]
+                formatted_questions.append({
+                    "exam_question_id": eq.id,
+                    "text": gen_q.question_text,
+                    "difficulty": gen_q.difficulty,
+                    "options": formatted_options
+                })
+                
+            return ExamBatchResponse(
+                session_id=ongoing.id,
+                batch_index=ongoing.current_batch_index,
+                questions=formatted_questions,
+                message=f"Melanjutkan Ujian (Batch {ongoing.current_batch_index})",
+                is_finished=False,
+                past_total_correct=past_correct,
+                past_total_answered=past_answered,
+                past_total_score=ongoing.total_score
+            )
+        else:
+            # Jika sesi ongoing tapi tidak punya soal (mungkin karena AI error sebelumnya)
+            # Hapus sesi yang rusak ini agar bisa buat yang baru
+            session.delete(ongoing)
+            session.commit()
 
     # Buat Sesi Baru
     new_session = ExamSession(
@@ -54,15 +101,21 @@ def start_exam(
     session.commit()
     session.refresh(new_session)
     
-    # Generate BATCH 1 (3 Soal, Level 1)
-    questions = _generate_batch_questions(
-        session=session,
-        exam_session_id=new_session.id,
-        topic=request.topic,
-        difficulty=1,
-        amount=3, # Batch 1 = 3 Soal
-        batch_num=1
-    )
+    try:
+        # Generate BATCH 1 (3 Soal, Level 1)
+        questions = _generate_batch_questions(
+            session=session,
+            exam_session_id=new_session.id,
+            topic=request.topic,
+            difficulty=1,
+            amount=3, # Batch 1 = 3 Soal
+            batch_num=1
+        )
+    except Exception as e:
+        # Jika AI gagal, hapus sesi ini agar tidak menggantung rusak
+        session.delete(new_session)
+        session.commit()
+        raise HTTPException(status_code=500, detail=f"Gagal menyiapkan ujian dari AI: {str(e)}")
     
     return ExamBatchResponse(
         session_id=new_session.id,

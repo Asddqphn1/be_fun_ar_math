@@ -4,8 +4,9 @@
 # ===================================
 
 # --- Web Framework ---
-fastapi==0.115.12
-uvicorn[standard]==0.34.3
+fastapi
+uvicorn
+a2wsgi
 
 # --- ORM & Database ---
 sqlmodel==0.0.24

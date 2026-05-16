@@ -9,25 +9,41 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # --- Database Configuration ---
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:12345@localhost:5432/math_app_db")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
-# Production: echo=False, pool settings optimal
-# Development: echo=True untuk debug SQL queries
-engine = create_engine(
-    DATABASE_URL,
-    echo=DEBUG,
-    pool_size=5,           # Jumlah koneksi di pool
-    max_overflow=10,       # Koneksi tambahan saat pool penuh
-    pool_pre_ping=True,    # Cek koneksi masih hidup sebelum dipakai
-    pool_recycle=300,       # Recycle koneksi setiap 5 menit (cegah timeout)
-)
+# LAZY ENGINE: Jangan buat engine saat import,
+# buat saat pertama kali dibutuhkan.
+# Ini mencegah crash di server kalau DATABASE_URL belum di-set.
+_engine = None
+
+
+def get_engine():
+    """Buat engine hanya saat pertama kali dipanggil."""
+    global _engine
+    if _engine is None:
+        db_url = DATABASE_URL
+        if not db_url:
+            raise RuntimeError(
+                "DATABASE_URL belum di-set! "
+                "Cek file .env atau environment variable di cPanel."
+            )
+        _engine = create_engine(
+            db_url,
+            echo=DEBUG,
+            pool_size=2,            # Shared hosting: pakai pool kecil!
+            max_overflow=3,         # Maksimal 5 koneksi total (2+3)
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
+        logger.info("Database engine berhasil dibuat.")
+    return _engine
 
 
 def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
+    SQLModel.metadata.create_all(get_engine())
 
 
 def get_session() -> Generator[Session, None, None]:
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         yield session

@@ -2,9 +2,8 @@ import json
 import logging
 import os
 import random
-from langchain.chat_models import init_chat_model
 from dotenv import load_dotenv
-
+from fastapi import HTTPException
 from app.models import QuestionTemplate
 
 load_dotenv()
@@ -14,15 +13,29 @@ logger = logging.getLogger(__name__)
 # Setup Client
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-model = init_chat_model(
-    model="inclusionai/ring-2.6-1t:free",
-    model_provider="openai",
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-    model_kwargs={
-        "response_format": { "type": "json_object" } # Memberitahu model secara tegas untuk kirim JSON
-    }
-)
+# ============================================
+# LAZY MODEL: Jangan init langchain saat import
+# Init hanya saat generate_soal_with_ai() dipanggil
+# Ini menghemat ~200MB RAM saat startup!
+# ============================================
+_model = None
+
+def _get_model():
+    """Lazy init LangChain model — hemat RAM saat startup."""
+    global _model
+    if _model is None:
+        logger.info("Initializing LangChain model (first call)...")
+        from langchain.chat_models import init_chat_model
+        _model = init_chat_model(
+            model="minimax/MiniMax-M2.7",
+            model_provider="openai",
+            base_url="https://9router.ruanjitech.com/v1",
+            api_key=OPENROUTER_API_KEY,
+            model_kwargs={
+                "response_format": { "type": "json_object" }
+            }
+        )
+    return _model
 
 # Rentang angka berdasarkan level kesulitan agar tiap soal punya angka variatif
 _NUMBER_RANGES = {
@@ -93,7 +106,7 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     """
 
     try:
-        response = model.invoke(prompt)
+        response = _get_model().invoke(prompt)
         soal_baru = response.content.strip()
 
         clean_soal = soal_baru.replace("```json", "").replace("```", "").strip()
@@ -102,14 +115,18 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
         soal_json = json.loads(clean_soal)
         return soal_json
         
+    except json.JSONDecodeError as e:
+        # Menangani kasus jika AI nge-halu dan return teks biasa, bukan JSON
+        logger.error(f"Error Parsing JSON dari AI: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Gagal memproses format soal dari AI. Silakan coba lagi."
+        )
     
     except Exception as e:
+        # Menangani error dari provider AI (seperti 403 Forbidden, timeout, limit habis, dll)
         logger.error(f"Error AI Service: {e}", exc_info=True)
-        # Return object darurat biar server gak crash
-        return {
-            "topic": template.topic,
-            "difficulty": template.difficulty,
-            "question_text": f"DEBUG ERROR: {str(e)}",
-            "answers": [],
-            "meta_info": f"Error System: {str(e)}"
-        }
+        raise HTTPException(
+            status_code=502, # 502 Bad Gateway lebih cocok untuk error dari third-party API
+            detail=f"Koneksi ke layanan AI gagal: {str(e)}"
+        )

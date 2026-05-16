@@ -22,6 +22,11 @@ class ExamBatchResponse(BaseModel):
     questions: List[QuestionItem]
     message: str
     is_finished: bool = False # Kalau true, frontend tampilin nilai
+    
+    # REKAP DATA SESI LAMA (Bila Resume)
+    past_total_correct: int = 0
+    past_total_answered: int = 0
+    past_total_score: float = 0.0
 
 # --- REQUEST START ---
 class StartExamRequest(BaseModel):
