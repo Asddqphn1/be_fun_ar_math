@@ -1,18 +1,41 @@
 import json
+import logging
 import os
 import random
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-
+from fastapi import HTTPException
 from app.models import QuestionTemplate
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 # Setup Client
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-client = genai.Client(api_key=GOOGLE_API_KEY)
-MODEL_ID = "gemini-flash-latest"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# ============================================
+# LAZY MODEL: Jangan init langchain saat import
+# Init hanya saat generate_soal_with_ai() dipanggil
+# Ini menghemat ~200MB RAM saat startup!
+# ============================================
+_model = None
+
+def _get_model():
+    """Lazy init LangChain model — hemat RAM saat startup."""
+    global _model
+    if _model is None:
+        logger.info("Initializing LangChain model (first call)...")
+        from langchain.chat_models import init_chat_model
+        _model = init_chat_model(
+            model="minimax/MiniMax-M2.7",
+            model_provider="openai",
+            base_url="https://9router.ruanjitech.com/v1",
+            api_key=OPENROUTER_API_KEY,
+            model_kwargs={
+                "response_format": { "type": "json_object" }
+            }
+        )
+    return _model
 
 # Rentang angka berdasarkan level kesulitan agar tiap soal punya angka variatif
 _NUMBER_RANGES = {
@@ -83,35 +106,27 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     """
 
     try:
-        # Panggil Google Gemini
-        response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
+        response = _get_model().invoke(prompt)
+        soal_baru = response.content.strip()
+
+        clean_soal = soal_baru.replace("```json", "").replace("```", "").strip()
+        logger.debug(f"Raw AI Response: {soal_baru}")
+        logger.debug(f"Cleaned AI Response: {clean_soal}")
+        soal_json = json.loads(clean_soal)
+        return soal_json
         
-        if response.text:
-            ai_json = json.loads(response.text)
-            
-            # Info monitoring token
-            usage = response.usage_metadata
-            total_tok = usage.total_token_count if usage else 0
-            ai_json["meta_info"] = f"Model: {MODEL_ID} | Level: {template.difficulty} | Token Used: {total_tok}"
-            
-            print(f"AI Response: {response.text}")
-            return ai_json
-        else:
-            raise Exception("Response AI kosong")
+    except json.JSONDecodeError as e:
+        # Menangani kasus jika AI nge-halu dan return teks biasa, bukan JSON
+        logger.error(f"Error Parsing JSON dari AI: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Gagal memproses format soal dari AI. Silakan coba lagi."
+        )
     
     except Exception as e:
-        print(f"Error AI Service: {e}")
-        # Return object darurat biar server gak crash
-        return {
-            "topic": template.topic,
-            "difficulty": template.difficulty,
-            "question_text": f"DEBUG ERROR: {str(e)}",
-            "answers": [],
-            "meta_info": f"Error System: {str(e)}"
-        }
+        # Menangani error dari provider AI (seperti 403 Forbidden, timeout, limit habis, dll)
+        logger.error(f"Error AI Service: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=502, # 502 Bad Gateway lebih cocok untuk error dari third-party API
+            detail=f"Koneksi ke layanan AI gagal: {str(e)}"
+        )

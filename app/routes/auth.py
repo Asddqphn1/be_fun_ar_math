@@ -1,15 +1,22 @@
+import os
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
 from google.oauth2 import id_token
 from google.auth.transport import requests
-import os
 import jwt
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
 from app.database import get_session
 from app.models import User
 from app.schemas.auth_google import DevLoginRequest, GoogleLoginRequest, LoginResponse
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -17,6 +24,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 SECRET_KEY = os.getenv("SECRET_KEY", "rahasia_default")
 ALGORITHM = "HS256"
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 
 # --- HELPER: Bikin Token JWT ---
@@ -50,16 +58,21 @@ def login_google(request: GoogleLoginRequest, session: Session = Depends(get_ses
 
 # ==========================================
 # 2. LOGIN DEVELOPER (Buat Test Postman)
+#    HANYA AKTIF SAAT DEBUG=true
 # ==========================================
-@router.post("/dev-login", response_model=LoginResponse)
-def login_dev(request: DevLoginRequest, session: Session = Depends(get_session)):
-    """
-    Login jalur tikus untuk testing Backend.
-    Cukup kirim email, otomatis dianggap user valid.
-    HANYA UNTUK DEVELOPMENT!
-    """
-    # Kita pakai email sebagai dummy ID Google juga
-    return process_login(session, request.email, "Developer User", f"dev_{request.email}", None)
+if DEBUG:
+    @router.post("/dev-login", response_model=LoginResponse)
+    def login_dev(request: DevLoginRequest, session: Session = Depends(get_session)):
+        """
+        Login jalur tikus untuk testing Backend.
+        Cukup kirim email, otomatis dianggap user valid.
+        HANYA UNTUK DEVELOPMENT! Endpoint ini tidak aktif di production.
+        """
+        logger.warning("[DEV-LOGIN] digunakan! Endpoint ini hanya untuk development.")
+        return process_login(session, request.email, "Developer User", f"dev_{request.email}", None)
+else:
+    logger.info("/auth/dev-login dinonaktifkan (production mode)")
+
 
 # --- CORE LOGIC (Dipakai kedua login di atas) ---
 def process_login(session: Session, email: str, name: str, google_id: str, picture: str):
@@ -80,6 +93,7 @@ def process_login(session: Session, email: str, name: str, google_id: str, pictu
         session.commit()
         session.refresh(user)
         is_new = True
+        logger.info(f"User baru terdaftar: {email}")
     else:
         # Update Data (User Lama)
         user.full_name = name
