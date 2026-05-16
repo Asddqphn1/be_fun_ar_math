@@ -1,3 +1,4 @@
+import logging
 from typing import List
 import random
 from fastapi import HTTPException
@@ -12,6 +13,8 @@ from app.schemas.ujian_request import (
     QuestionItem, OptionResponse,
 )
 from app.services.ai_service import generate_soal_with_ai 
+
+logger = logging.getLogger(__name__)
 
 
 def _generate_batch_questions(session: Session, exam_session_id: int, topic: str, difficulty: int, amount: int, batch_num: int) -> List[QuestionItem]:
@@ -29,7 +32,7 @@ def _generate_batch_questions(session: Session, exam_session_id: int, topic: str
     
     # Fallback jika template habis
     if not templates:
-        print(f"Warning: Template Level {difficulty} kosong. Mengambil acak topic {topic}.")
+        logger.warning(f"Template Level {difficulty} kosong. Mengambil acak topic {topic}.")
         stmt_fallback = select(QuestionTemplate).where(QuestionTemplate.topic == topic)
         templates = session.exec(stmt_fallback).all()
     

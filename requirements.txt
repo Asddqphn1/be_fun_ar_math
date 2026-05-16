@@ -1,0 +1,29 @@
+# ===================================
+# Fun AR Math - Backend Dependencies
+# Python >= 3.10
+# ===================================
+
+# --- Web Framework ---
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+
+# --- ORM & Database ---
+sqlmodel==0.0.24
+sqlalchemy==2.0.41
+psycopg2-binary==2.9.10
+
+# --- Authentication ---
+google-auth==2.40.1
+google-auth-oauthlib==1.2.1
+PyJWT==2.10.1
+
+# --- AI / LLM ---
+langchain==0.3.25
+langchain-openai==0.3.18
+
+# --- Utilities ---
+python-dotenv==1.1.0
+pydantic==2.11.3
+
+# --- Google GenAI (untuk modelAI.py) ---
+google-genai==1.16.1
