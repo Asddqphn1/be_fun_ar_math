@@ -28,9 +28,9 @@ def _get_model():
         logger.info("Initializing LangChain model (first call)...")
         from langchain.chat_models import init_chat_model
         _model = init_chat_model(
-            model="minimax/MiniMax-M2.7",
+            model=os.getenv("MODEL_NAME"),
             model_provider="openai",
-            base_url="https://9router.ruanjitech.com/v1",
+            base_url=os.getenv("AI_BASE_URL"),
             api_key=OPENROUTER_API_KEY,
             model_kwargs={
                 "response_format": { "type": "json_object" },
