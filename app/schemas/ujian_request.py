@@ -1,7 +1,7 @@
 # app/schemas/ujian_request.py
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.models import OptionLabelEnum
 
 # --- SCHEMA DATA SOAL PER ITEM ---
@@ -30,6 +30,10 @@ class ExamBatchResponse(BaseModel):
 
 # --- REQUEST START ---
 class StartExamRequest(BaseModel):
+    topic: str
+
+class StartExamTokenRequest(BaseModel):
+    token: str = Field(pattern=r"^\d{6}$")
     topic: str
 
 # --- REQUEST SUBMIT BATCH (Dari Flutter) ---

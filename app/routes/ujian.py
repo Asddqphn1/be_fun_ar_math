@@ -5,12 +5,13 @@ from datetime import datetime
 
 from app.core.depedencies import NilaiServicesDepedencies
 from app.database import get_session
-from app.helper.generated_helper import _generate_batch_questions
-from app.models import AnswerGenerated, ExamQuestion, User, ExamSession, ExamStatusEnum, QuestionGenerated
+from app.helper.generated_helper import _generate_batch_questions, _select_existing_batch_questions
+from app.models import AnswerGenerated, ExamQuestion, User, ExamSession, ExamStatusEnum, QuestionGenerated, SchoolToken
 from app.routes.auth import get_current_user
 from app.schemas.base_schemas import BaseResponse
 from app.schemas.ujian_request import (
     StartExamRequest, 
+    StartExamTokenRequest,
     ExamBatchResponse, 
     SubmitBatchRequest, 
     SubmitBatchResponse, 
@@ -117,6 +118,112 @@ def start_exam(
         session.commit()
         raise HTTPException(status_code=500, detail=f"Gagal menyiapkan ujian dari AI: {str(e)}")
     
+    return ExamBatchResponse(
+        session_id=new_session.id,
+        batch_index=1,
+        questions=questions,
+        message="Batch 1 dimulai (3 Soal)",
+        is_finished=False
+    )
+
+
+@router.post("/start-token", response_model=ExamBatchResponse)
+def start_exam_token(
+    request: StartExamTokenRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    school_token = session.exec(
+        select(SchoolToken).where(SchoolToken.token == request.token)
+    ).first()
+    if not school_token:
+        raise HTTPException(status_code=400, detail="Token sekolah tidak valid")
+
+    ongoing = session.exec(select(ExamSession).where(
+        ExamSession.user_id == current_user.id,
+        ExamSession.status == ExamStatusEnum.ONGOING,
+        ExamSession.school_token_id == school_token.id,
+        ExamSession.topic == request.topic
+    )).first()
+
+    if ongoing:
+        unanswered_questions = session.exec(select(ExamQuestion).where(
+            ExamQuestion.exam_session_id == ongoing.id,
+            ExamQuestion.user_answer_label == None
+        )).all()
+
+        if unanswered_questions:
+            answered_questions = session.exec(select(ExamQuestion).where(
+                ExamQuestion.exam_session_id == ongoing.id,
+                ExamQuestion.user_answer_label != None
+            )).all()
+
+            past_correct = sum(1 for eq in answered_questions if eq.is_correct)
+            past_answered = len(answered_questions)
+
+            formatted_questions = []
+            for eq in unanswered_questions:
+                gen_q = session.get(QuestionGenerated, eq.generated_question_id)
+                answers_db = session.exec(select(AnswerGenerated).where(
+                    AnswerGenerated.question_generated_id == gen_q.id
+                )).all()
+                formatted_options = [
+                    {"label": a.option_label, "text": a.option_text} for a in answers_db
+                ]
+                formatted_questions.append({
+                    "exam_question_id": eq.id,
+                    "text": gen_q.question_text,
+                    "difficulty": gen_q.difficulty,
+                    "options": formatted_options
+                })
+
+            return ExamBatchResponse(
+                session_id=ongoing.id,
+                batch_index=ongoing.current_batch_index,
+                questions=formatted_questions,
+                message=f"Melanjutkan Ujian (Batch {ongoing.current_batch_index})",
+                is_finished=False,
+                past_total_correct=past_correct,
+                past_total_answered=past_answered,
+                past_total_score=ongoing.total_score
+            )
+        else:
+            session.delete(ongoing)
+            session.commit()
+
+    new_session = ExamSession(
+        user_id=current_user.id,
+        topic=request.topic,
+        start_time=datetime.now(),
+        current_difficulty_level=1,
+        current_batch_index=1,
+        status=ExamStatusEnum.ONGOING,
+        total_score=0.0,
+        school_token_id=school_token.id,
+    )
+    session.add(new_session)
+    session.commit()
+    session.refresh(new_session)
+
+    try:
+        questions = _select_existing_batch_questions(
+            session=session,
+            exam_session_id=new_session.id,
+            topic=request.topic,
+            difficulty=1,
+            amount=3,
+            batch_num=1,
+            school_token_id=school_token.id,
+        )
+    except HTTPException:
+        session.delete(new_session)
+        session.commit()
+        raise
+    except Exception as e:
+        session.delete(new_session)
+        session.commit()
+        raise HTTPException(status_code=500, detail=f"Gagal menyiapkan ujian: {str(e)}")
+
     return ExamBatchResponse(
         session_id=new_session.id,
         batch_index=1,
@@ -474,6 +581,144 @@ def submit_batch(
         )
     else:
         # --- FINISH EXAM (Setelah Batch 5 selesai dihajar) ---
+        session.add(exam_session)
+        session.commit()
+        session.refresh(exam_session)
+
+    return SubmitBatchResponse(
+        batch_index_just_finished=current_batch,
+        score_gained=score_gained,
+        correct_count=correct_count,
+        total_score=exam_session.total_score,
+        next_level=exam_session.current_difficulty_level,
+        message=message,
+        avg_time_seconds=round(avg_time, 1),
+        time_bonus=time_bonus,
+        next_batch=next_batch_response
+    )
+
+
+@router.post("/submit-batch-token", response_model=SubmitBatchResponse)
+def submit_batch_token(
+    request: SubmitBatchRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    exam_session = session.get(ExamSession, request.session_id)
+    if not exam_session or exam_session.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Sesi tidak valid")
+
+    if exam_session.status == ExamStatusEnum.COMPLETED:
+        raise HTTPException(status_code=400, detail="Ujian sudah selesai")
+
+    if not exam_session.school_token_id:
+        raise HTTPException(status_code=400, detail="Token sekolah tidak terkait di sesi ini")
+
+    correct_count = 0
+    score_gained = 0.0
+    total_time = 0
+
+    for answer_item in request.answers:
+        exam_question = session.get(ExamQuestion, answer_item.exam_question_id)
+        if not exam_question:
+            continue
+
+        correct_ans = session.exec(select(AnswerGenerated).where(
+            AnswerGenerated.question_generated_id == exam_question.generated_question_id,
+            AnswerGenerated.is_correct
+        )).first()
+
+        is_correct = False
+        if correct_ans and correct_ans.option_label == answer_item.answer_label:
+            is_correct = True
+            correct_count += 1
+            score_gained += (exam_session.current_difficulty_level * 10)
+
+        exam_question.user_answer_label = answer_item.answer_label
+        exam_question.is_correct = is_correct
+        exam_question.thinking_time_seconds = answer_item.time_seconds
+        total_time += answer_item.time_seconds
+        session.add(exam_question)
+
+    prev_batch_size = len(request.answers)
+    accuracy = correct_count / prev_batch_size if prev_batch_size > 0 else 0
+    avg_time = total_time / prev_batch_size if prev_batch_size > 0 else 0
+
+    TIME_LIMITS = {
+        1: {"cepat": 15, "normal": 30, "lambat": 60},
+        2: {"cepat": 20, "normal": 45, "lambat": 90},
+        3: {"cepat": 30, "normal": 60, "lambat": 120},
+    }
+
+    current_level = exam_session.current_difficulty_level
+    time_limit = TIME_LIMITS.get(current_level, TIME_LIMITS[1])
+
+    time_bonus = 0.0
+    if correct_count > 0 and avg_time <= time_limit["normal"]:
+        time_bonus = correct_count * 5
+        if avg_time <= time_limit["cepat"]:
+            time_bonus = correct_count * 10
+        score_gained += time_bonus
+
+    exam_session.total_score += score_gained
+
+    message = "Level Tetap"
+
+    if accuracy >= 0.6:
+        if avg_time <= time_limit["normal"]:
+            if exam_session.current_difficulty_level < 3:
+                exam_session.current_difficulty_level += 1
+                if avg_time <= time_limit["cepat"]:
+                    message = "Luar biasa! Jawab cepat & tepat! Level Naik! 🚀🔥"
+                else:
+                    message = "Bagus! Level Naik! 🚀"
+        else:
+            message = "Jawaban bagus, tapi coba percepat waktumu! ⏱️"
+
+    elif accuracy > 0.3:
+        if avg_time <= time_limit["cepat"]:
+            if exam_session.current_difficulty_level > 1:
+                exam_session.current_difficulty_level -= 1
+                message = "Jangan terburu-buru menjawab! Level Turun 🔻"
+            else:
+                message = "Pelan-pelan, baca soalnya dengan teliti! ⚠️"
+        else:
+            message = "Terus berlatih, kamu pasti bisa! 💪"
+
+    else:
+        if exam_session.current_difficulty_level > 1:
+            exam_session.current_difficulty_level -= 1
+            message = "Level Turun, ayo fokus lagi! 🔻"
+        else:
+            message = "Jangan menyerah, coba lagi! 💪"
+
+    current_batch = exam_session.current_batch_index
+    next_batch_response = None
+
+    if current_batch < 5:
+        next_batch_index = current_batch + 1
+        exam_session.current_batch_index = next_batch_index
+
+        next_amount = 3
+
+        new_questions = _select_existing_batch_questions(
+            session=session,
+            exam_session_id=exam_session.id,
+            topic=exam_session.topic,
+            difficulty=exam_session.current_difficulty_level,
+            amount=next_amount,
+            batch_num=next_batch_index,
+            school_token_id=exam_session.school_token_id,
+        )
+
+        next_batch_response = ExamBatchResponse(
+            session_id=exam_session.id,
+            batch_index=next_batch_index,
+            questions=new_questions,
+            message=f"Lanjut ke Batch {next_batch_index}",
+            is_finished=False
+        )
+    else:
         session.add(exam_session)
         session.commit()
         session.refresh(exam_session)
