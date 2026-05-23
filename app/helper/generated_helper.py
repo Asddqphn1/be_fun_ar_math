@@ -41,67 +41,50 @@ def _generate_batch_questions(
     if not templates:
         raise HTTPException(status_code=404, detail=f"Belum ada bank soal untuk topik {topic}")
 
-    # Pilih template secara acak sebanyak 'amount' (misal: 3)
-    selected_templates = [random.choice(templates) for _ in range(amount)]
+    # Pilih SATU template secara acak sebagai base
+    selected_template = random.choice(templates)
     
-    # 2. EKSEKUSI PARALEL (Multithreading) KHUSUS UNTUK CALL AI
-    ai_results = []
-    
-    # Gunakan ThreadPoolExecutor. max_workers diset sesuai jumlah soal.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=amount) as executor:
-        # Submit tugas ke thread pool (HANYA fungsi call AI, tanpa kirim session DB)
-        # Kita menggunakan dictionary (future_to_template) agar tahu template mana menghasilkan AI yang mana
-        future_to_template = {
-            executor.submit(generate_soal_with_ai, tmpl): tmpl for tmpl in selected_templates
-        }
-        
-        # As_completed akan langsung memproses hasil yang sudah selesai duluan
-        for future in concurrent.futures.as_completed(future_to_template):
-            template_asal = future_to_template[future]
-            try:
-                ai_json = future.result()
-                # Kita gabungkan hasil AI dengan ID template asal agar bisa disimpan ke DB
-                ai_results.append({
-                    "template_id": template_asal.id,
-                    "ai_data": ai_json
-                })
-            except Exception as e:
-                # Log jika ada 1 soal gagal digenerate, sisanya tetap jalan
-                print(f"Error generate AI untuk template {template_asal.id}: {e}")
+    # 2. PANGGIL AI SATU KALI UNTUK MENGHASILKAN 3 VARIASI SEKALIGUS
+    try:
+        # Mengembalikan object Pydantic BatchQuestionsGenerated
+        batch_response = generate_soal_with_ai(selected_template)
+    except Exception as e:
+        logger.error(f"Gagal meng-generate batch soal dari AI: {e}")
+        raise HTTPException(status_code=502, detail="Gagal meng-generate soal dari AI. Silakan coba lagi.")
 
-    # Validasi jika gagal total
-    if not ai_results:
-        raise HTTPException(status_code=502, detail="Gagal meng-generate seluruh soal dari AI. Silakan coba lagi.")
+    if not batch_response or not batch_response.questions:
+        raise HTTPException(status_code=502, detail="AI tidak mengembalikan daftar soal dengan benar.")
 
-    # 3. SIMPAN KE DATABASE DI MAIN THREAD (Aman & Tidak Bentrok)
+    # Ambil soal sebanyak 'amount' (jaga-jaga jika AI mengembalikan lebih/kurang)
+    ai_questions = batch_response.questions[:amount]
+
+    # 3. SIMPAN KE DATABASE (TUNGGAL COMMIT)
     formatted_questions_for_frontend = []
     
-    for result_item in ai_results:
-        template_id = result_item["template_id"]
-        ai_data = result_item["ai_data"]
-        
+    for ai_q in ai_questions:
         # Simpan Soal Generated
         new_gen_question = QuestionGenerated(
-            question_template_id=template_id,
+            question_template_id=selected_template.id,
             topic=topic,
-            difficulty=ai_data.get("difficulty", difficulty),
-            question_text=ai_data["question_text"]
+            difficulty=difficulty, # Gunakan difficulty dari level yg di-generate
+            question_text=ai_q.question_text
         )
         session.add(new_gen_question)
-        session.commit()
-        session.refresh(new_gen_question)
+        session.flush() # Flush agar dapat ID
         
         # Simpan Jawaban
-        list_jawaban = ai_data.get("answers", [])
-        random.shuffle(list_jawaban) # Acak opsi A, B, C, D
+        list_jawaban = ai_q.answers
+        # Pastikan list_jawaban diacak agar posisi benar bervariasi
+        list_jawaban_dict = [{"text": j.text, "is_correct": j.is_correct} for j in list_jawaban]
+        random.shuffle(list_jawaban_dict)
         label_urut = ["A", "B", "C", "D"]
         formatted_options = []
         
-        for idx, ans in enumerate(list_jawaban[:4]):
+        for idx, ans in enumerate(list_jawaban_dict[:4]):
             new_answer = AnswerGenerated(
                 question_generated_id=new_gen_question.id,
                 option_label=OptionLabelEnum(label_urut[idx]), 
-                option_text=str(ans["text"]),
+                option_text=ans["text"],
                 is_correct=ans["is_correct"]
             )
             session.add(new_answer)
@@ -109,11 +92,9 @@ def _generate_batch_questions(
             # Format untuk balikan ke response JSON
             formatted_options.append({
                 "label": label_urut[idx],
-                "text": str(ans["text"])
+                "text": ans["text"]
             })
             
-        session.commit() # Commit seluruh jawaban
-        
         # Link Soal ke Sesi Ujian (ExamQuestion)
         exam_q = ExamQuestion(
             exam_session_id=exam_session_id,
@@ -121,8 +102,7 @@ def _generate_batch_questions(
             status="UNANSWERED"
         )
         session.add(exam_q)
-        session.commit()
-        session.refresh(exam_q)
+        session.flush() # Flush lagi untuk mendapatkan exam_q.id
         
         # Susun data untuk dikirim ke Frontend
         formatted_questions_for_frontend.append({
@@ -131,5 +111,8 @@ def _generate_batch_questions(
             "difficulty": new_gen_question.difficulty,
             "options": formatted_options
         })
+
+    # COMMIT SATU KALI DI AKHIR
+    session.commit()
         
     return formatted_questions_for_frontend

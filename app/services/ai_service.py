@@ -5,6 +5,7 @@ import random
 from dotenv import load_dotenv
 from fastapi import HTTPException
 from app.models import QuestionTemplate
+from app.schemas.soal_generated import BatchQuestionsGenerated
 
 load_dotenv()
 
@@ -32,7 +33,8 @@ def _get_model():
             base_url="https://9router.ruanjitech.com/v1",
             api_key=OPENROUTER_API_KEY,
             model_kwargs={
-                "response_format": { "type": "json_object" }
+                "response_format": { "type": "json_object" },
+                "max_tokens": 2500
             }
         )
     return _model
@@ -51,9 +53,11 @@ def _generate_random_seed_numbers(difficulty: int) -> str:
     return ", ".join(str(n) for n in nums)
 
 
-def generate_soal_with_ai(template: QuestionTemplate) -> dict:
+
+
+def generate_soal_with_ai(template: QuestionTemplate) -> BatchQuestionsGenerated:
     """
-    Mengirim template ke AI dan menerima JSON soal baru.
+    Mengirim template ke AI dan menerima JSON 3 soal baru.
     """
     
     # 1. Terjemahkan Level Angka ke Bahasa Manusia
@@ -71,7 +75,7 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     # 3. Prompt Engineering
     prompt = f"""
     Kamu adalah Guru Matematika SMP profesional yang menyusun soal ujian berstandar akademik.
-    Tugas: Buat 1 variasi soal baru berdasarkan template berikut.
+    Tugas: Buat TEPAT 3 variasi soal baru berdasarkan template berikut.
     
     DATA TEMPLATE:
     - Topik: {template.topic}
@@ -82,51 +86,54 @@ def generate_soal_with_ai(template: QuestionTemplate) -> dict:
     Rentang angka yang sesuai level ini: {num_cfg["desc"]}
     
     INSTRUKSI WAJIB:
-    1. Buat soal baru yang SETARA dengan Level {template.difficulty}.
-    2. GUNAKAN angka-angka yang BERBEDA dari soal asli. Manfaatkan angka acak referensi di atas sebagai inspirasi, atau buat angka baru sendiri dalam rentang yang sesuai. JANGAN menggunakan angka yang sama dengan soal asli.
-    3. Ubah konteks cerita/narasi soal agar berbeda dari soal asli, namun tetap realistis dan relevan dengan kehidupan sehari-hari.
-    4. Gunakan bahasa Indonesia baku yang jelas dan formal, sesuai standar soal ujian akademik. JANGAN menggunakan humor, lelucon, atau punchline.
+    1. Buat 3 soal baru yang SETARA dengan Level {template.difficulty}.
+    2. GUNAKAN angka-angka yang BERBEDA dari soal asli. Manfaatkan angka acak referensi di atas sebagai inspirasi, atau buat angka baru sendiri dalam rentang yang sesuai.
+    3. Ubah konteks cerita/narasi setiap soal agar berbeda dari soal asli dan satu sama lain, namun tetap realistis.
+    4. Gunakan bahasa Indonesia baku yang jelas dan formal.
     5. Pastikan logika penyelesaian dan tingkat kesulitan tetap setara dengan soal asli.
-    6. Pastikan tepat 1 jawaban benar dan 3 pengecoh (distractor) yang masuk akal.
-    7. Output WAJIB JSON murni.
-    8. Field 'difficulty' HARUS berupa ANGKA integer ({template.difficulty}), JANGAN string.
+    6. Pastikan setiap soal memiliki tepat 1 jawaban benar dan 3 pengecoh (distractor).
+    7. Output WAJIB JSON murni sesuai skema.
     
     FORMAT JSON RESPONSE PERSIS TANPA TAMBAHAN SYNTAX MARKDOWN SEPERTI ```json:
     {{
-        "topic": "{template.topic}",
-        "difficulty": {template.difficulty},
-        "question_text": "Tulis narasi soal barumu di sini...",
-        "answers": [
-            {{ "label": "A", "text": "...", "is_correct": false }},
-            {{ "label": "B", "text": "...", "is_correct": true }},
-            {{ "label": "C", "text": "...", "is_correct": false }},
-            {{ "label": "D", "text": "...", "is_correct": false }}
+        "questions": [
+            {{
+                "question_text": "Tulis narasi soal variasi ke-1 di sini...",
+                "answers": [
+                    {{ "label": "A", "text": "...", "is_correct": false }},
+                    {{ "label": "B", "text": "...", "is_correct": true }},
+                    {{ "label": "C", "text": "...", "is_correct": false }},
+                    {{ "label": "D", "text": "...", "is_correct": false }}
+                ]
+            }},
+            {{
+                "question_text": "Tulis narasi soal variasi ke-2 di sini...",
+                "answers": [ ... ]
+            }},
+            {{
+                "question_text": "Tulis narasi soal variasi ke-3 di sini...",
+                "answers": [ ... ]
+            }}
         ]
     }}
     """
 
     try:
-        response = _get_model().invoke(prompt)
-        soal_baru = response.content.strip()
-
-        clean_soal = soal_baru.replace("```json", "").replace("```", "").strip()
-        logger.debug(f"Raw AI Response: {soal_baru}")
-        logger.debug(f"Cleaned AI Response: {clean_soal}")
-        soal_json = json.loads(clean_soal)
-        return soal_json
+        model = _get_model().with_structured_output(BatchQuestionsGenerated, method="json_mode")
+        response = model.invoke(prompt)
+        return response
         
-    except json.JSONDecodeError as e:
-        # Menangani kasus jika AI nge-halu dan return teks biasa, bukan JSON
-        logger.error(f"Error Parsing JSON dari AI: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Gagal memproses format soal dari AI. Silakan coba lagi."
-        )
-    
     except Exception as e:
-        # Menangani error dari provider AI (seperti 403 Forbidden, timeout, limit habis, dll)
-        logger.error(f"Error AI Service: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=502, # 502 Bad Gateway lebih cocok untuk error dari third-party API
-            detail=f"Koneksi ke layanan AI gagal: {str(e)}"
-        )
+        # Pengecekan fallback manual jika json_mode gagal di parsing
+        logger.error(f"Structured output failed. Fallback to manual parsing. Error: {e}")
+        try:
+            raw_response = _get_model().invoke(prompt)
+            clean_soal = raw_response.content.replace("```json", "").replace("```", "").strip()
+            soal_json = json.loads(clean_soal)
+            return BatchQuestionsGenerated(**soal_json)
+        except Exception as fallback_e:
+            logger.error(f"Error AI Service: {fallback_e}", exc_info=True)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Koneksi ke layanan AI gagal atau format tidak sesuai: {str(fallback_e)}"
+            )
