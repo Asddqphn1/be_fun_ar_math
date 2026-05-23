@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import random
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple
 from dotenv import load_dotenv
 from fastapi import HTTPException
 from app.models import QuestionTemplate
@@ -22,6 +22,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # ============================================
 _model = None
 _bulk_model = None
+_bulk_stream_model = None
 
 def _get_model():
     """Lazy init LangChain model — hemat RAM saat startup."""
@@ -61,6 +62,27 @@ def _get_bulk_model():
         )
     return _bulk_model
 
+
+def _get_bulk_stream_model():
+    """Lazy init model for streaming bulk generation responses."""
+    global _bulk_stream_model
+    if _bulk_stream_model is None:
+        logger.info("Initializing LangChain bulk stream model (first call)...")
+        from langchain.chat_models import init_chat_model
+        max_tokens = int(os.getenv("BULK_MAX_TOKENS", "64000"))
+        _bulk_stream_model = init_chat_model(
+            model=os.getenv("MODEL_NAME"),
+            model_provider="openai",
+            base_url=os.getenv("AI_BASE_URL"),
+            api_key=OPENROUTER_API_KEY,
+            streaming=True,
+            model_kwargs={
+                "response_format": {"type": "json_object"},
+                "max_tokens": max_tokens,
+            },
+        )
+    return _bulk_stream_model
+
 # Rentang angka berdasarkan level kesulitan agar tiap soal punya angka variatif
 _NUMBER_RANGES = {
     1: {"min": 1, "max": 50, "desc": "bilangan bulat kecil (1-50)"},
@@ -73,6 +95,55 @@ def _generate_random_seed_numbers(difficulty: int) -> str:
     cfg = _NUMBER_RANGES.get(difficulty, _NUMBER_RANGES[3])
     nums = [random.randint(cfg["min"], cfg["max"]) for _ in range(4)]
     return ", ".join(str(n) for n in nums)
+
+
+def _build_bulk_prompt(template: QuestionTemplate, total_questions: int) -> str:
+    level_map = {
+        1: "Mudah / Dasar (Pemahaman Konsep)",
+        2: "Sedang / Menengah (Aplikasi Rumus)",
+        3: "Sulit / Kompleks (Analisis / HOTS)",
+    }
+    level_context = level_map.get(template.difficulty, "Sangat Sulit")
+
+    num_cfg = _NUMBER_RANGES.get(template.difficulty, _NUMBER_RANGES[3])
+    seed_numbers = _generate_random_seed_numbers(template.difficulty)
+
+    return f"""
+    Kamu adalah Guru Matematika SMP profesional yang menyusun soal ujian berstandar akademik.
+    Tugas: Buat TEPAT {total_questions} variasi soal baru berdasarkan template berikut.
+
+    DATA TEMPLATE:
+    - Topik: {template.topic}
+    - Level Difficulty: {template.difficulty} ({level_context})
+    - Soal Asli: "{template.question_text}"
+
+    ANGKA ACAK REFERENSI: {seed_numbers}
+    Rentang angka yang sesuai level ini: {num_cfg["desc"]}
+
+    INSTRUKSI WAJIB:
+    1. Buat {total_questions} soal baru yang SETARA dengan Level {template.difficulty}.
+    2. GUNAKAN angka-angka yang BERBEDA dari soal asli. Manfaatkan angka acak referensi di atas sebagai inspirasi, atau buat angka baru sendiri dalam rentang yang sesuai.
+    3. Ubah konteks cerita/narasi setiap soal agar berbeda dari soal asli dan satu sama lain, namun tetap realistis.
+    4. Gunakan bahasa Indonesia baku yang jelas dan formal.
+    5. Pastikan logika penyelesaian dan tingkat kesulitan tetap setara dengan soal asli.
+    6. Pastikan setiap soal memiliki tepat 1 jawaban benar dan 3 pengecoh (distractor).
+    7. Output WAJIB JSON murni sesuai skema dan TANPA markdown.
+
+    FORMAT JSON RESPONSE PERSIS:
+    {{
+        "questions": [
+            {{
+                "question_text": "Tulis narasi soal variasi di sini...",
+                "answers": [
+                    {{ "label": "A", "text": "...", "is_correct": false }},
+                    {{ "label": "B", "text": "...", "is_correct": true }},
+                    {{ "label": "C", "text": "...", "is_correct": false }},
+                    {{ "label": "D", "text": "...", "is_correct": false }}
+                ]
+            }}
+        ]
+    }}
+    """
 
 
 
@@ -168,53 +239,7 @@ def generate_bulk_soal_with_ai(
     """Mengirim template ke AI dan menerima JSON banyak soal sekaligus."""
     if total_questions <= 0:
         raise ValueError("total_questions harus lebih dari 0")
-
-    level_map = {
-        1: "Mudah / Dasar (Pemahaman Konsep)",
-        2: "Sedang / Menengah (Aplikasi Rumus)",
-        3: "Sulit / Kompleks (Analisis / HOTS)",
-    }
-    level_context = level_map.get(template.difficulty, "Sangat Sulit")
-
-    num_cfg = _NUMBER_RANGES.get(template.difficulty, _NUMBER_RANGES[3])
-    seed_numbers = _generate_random_seed_numbers(template.difficulty)
-
-    prompt = f"""
-    Kamu adalah Guru Matematika SMP profesional yang menyusun soal ujian berstandar akademik.
-    Tugas: Buat TEPAT {total_questions} variasi soal baru berdasarkan template berikut.
-
-    DATA TEMPLATE:
-    - Topik: {template.topic}
-    - Level Difficulty: {template.difficulty} ({level_context})
-    - Soal Asli: "{template.question_text}"
-
-    ANGKA ACAK REFERENSI: {seed_numbers}
-    Rentang angka yang sesuai level ini: {num_cfg["desc"]}
-
-    INSTRUKSI WAJIB:
-    1. Buat {total_questions} soal baru yang SETARA dengan Level {template.difficulty}.
-    2. GUNAKAN angka-angka yang BERBEDA dari soal asli. Manfaatkan angka acak referensi di atas sebagai inspirasi, atau buat angka baru sendiri dalam rentang yang sesuai.
-    3. Ubah konteks cerita/narasi setiap soal agar berbeda dari soal asli dan satu sama lain, namun tetap realistis.
-    4. Gunakan bahasa Indonesia baku yang jelas dan formal.
-    5. Pastikan logika penyelesaian dan tingkat kesulitan tetap setara dengan soal asli.
-    6. Pastikan setiap soal memiliki tepat 1 jawaban benar dan 3 pengecoh (distractor).
-    7. Output WAJIB JSON murni sesuai skema dan TANPA markdown.
-
-    FORMAT JSON RESPONSE PERSIS:
-    {{
-        "questions": [
-            {{
-                "question_text": "Tulis narasi soal variasi di sini...",
-                "answers": [
-                    {{ "label": "A", "text": "...", "is_correct": false }},
-                    {{ "label": "B", "text": "...", "is_correct": true }},
-                    {{ "label": "C", "text": "...", "is_correct": false }},
-                    {{ "label": "D", "text": "...", "is_correct": false }}
-                ]
-            }}
-        ]
-    }}
-    """
+    prompt = _build_bulk_prompt(template, total_questions)
 
     try:
         raw_response = _get_bulk_model().invoke(prompt)
@@ -230,6 +255,35 @@ def generate_bulk_soal_with_ai(
         raise
     except Exception as e:
         logger.error(f"Error AI Service (bulk): {e}", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Koneksi ke layanan AI gagal atau format tidak sesuai: {str(e)}",
+        )
+
+
+async def stream_bulk_soal_with_ai(
+    template: QuestionTemplate,
+    total_questions: int = 100,
+) -> AsyncIterator[Dict[str, Any]]:
+    """Streaming token per token untuk bulk generation."""
+    if total_questions <= 0:
+        raise ValueError("total_questions harus lebih dari 0")
+
+    prompt = _build_bulk_prompt(template, total_questions)
+
+    try:
+        model = _get_bulk_stream_model()
+        async for chunk in model.astream(prompt):
+            text = getattr(chunk, "content", None)
+            reasoning_details = _extract_reasoning_details(chunk)
+            payload = {
+                "text": text,
+                "reasoning_details": reasoning_details,
+            }
+            if payload["text"] or payload["reasoning_details"]:
+                yield payload
+    except Exception as e:
+        logger.error(f"Error AI Service (bulk stream): {e}", exc_info=True)
         raise HTTPException(
             status_code=502,
             detail=f"Koneksi ke layanan AI gagal atau format tidak sesuai: {str(e)}",
@@ -319,6 +373,23 @@ def _normalize_bulk_questions(payload: Dict[str, Any], max_questions: int) -> Li
         logger.warning("Bulk normalize dropped %s invalid questions", dropped)
 
     return normalized
+
+
+def parse_bulk_questions(content: str, max_questions: int) -> List[Dict[str, Any]]:
+    payload = _safe_json_load(content)
+    return _normalize_bulk_questions(payload, max_questions)
+
+
+def _extract_reasoning_details(chunk: Any) -> Optional[Any]:
+    additional = getattr(chunk, "additional_kwargs", None)
+    if additional and "reasoning_details" in additional:
+        return additional.get("reasoning_details")
+
+    response_metadata = getattr(chunk, "response_metadata", None)
+    if response_metadata and "reasoning_details" in response_metadata:
+        return response_metadata.get("reasoning_details")
+
+    return None
 
 
 def iter_generate_bulk_questions(

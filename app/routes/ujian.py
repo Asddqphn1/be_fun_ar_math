@@ -14,6 +14,7 @@ from app.schemas.ujian_request import (
     StartExamTokenRequest,
     ExamBatchResponse, 
     SubmitBatchRequest, 
+    SubmitBatchTokenRequest,
     SubmitBatchResponse, 
     ExamValuesUsers
 )
@@ -600,7 +601,7 @@ def submit_batch(
 
 @router.post("/submit-batch-token", response_model=SubmitBatchResponse)
 def submit_batch_token(
-    request: SubmitBatchRequest,
+    request: SubmitBatchTokenRequest,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
 ):
@@ -613,6 +614,15 @@ def submit_batch_token(
 
     if not exam_session.school_token_id:
         raise HTTPException(status_code=400, detail="Token sekolah tidak terkait di sesi ini")
+
+    school_token = session.exec(
+        select(SchoolToken).where(SchoolToken.token == request.token)
+    ).first()
+    if not school_token:
+        raise HTTPException(status_code=400, detail="Token sekolah tidak valid")
+
+    if exam_session.school_token_id != school_token.id:
+        raise HTTPException(status_code=403, detail="Token sekolah tidak sesuai dengan sesi ini")
 
     correct_count = 0
     score_gained = 0.0
@@ -774,13 +784,33 @@ def complete_exam(
 
 
 @router.get("/nilai", response_model=List[ExamValuesUsers])
-def getNilai(services: NilaiServicesDepedencies):
-    return services.getNilai()
+def getNilai(
+    token: str,
+    services: NilaiServicesDepedencies,
+    session: Session = Depends(get_session),
+):
+    school_token = session.exec(
+        select(SchoolToken).where(SchoolToken.token == token)
+    ).first()
+    if not school_token:
+        raise HTTPException(status_code=400, detail="Token sekolah tidak valid")
+    return services.getNilaiByToken(school_token.id)
 
 
 @router.get("/nilai/{user_id}", response_model=BaseResponse[List[ExamValuesUsers]])
-def getNilaiByUserId(user_id: int, services: NilaiServicesDepedencies):
-    hasil = services.getNilaiByUserId(user_id)
+def getNilaiByUserId(
+    user_id: int,
+    token: str,
+    services: NilaiServicesDepedencies,
+    session: Session = Depends(get_session),
+):
+    school_token = session.exec(
+        select(SchoolToken).where(SchoolToken.token == token)
+    ).first()
+    if not school_token:
+        raise HTTPException(status_code=400, detail="Token sekolah tidak valid")
+
+    hasil = services.getNilaiByUserIdAndToken(user_id, school_token.id)
     
     if not hasil:
         raise HTTPException(status_code=404, detail="Data nilai tidak ditemukan untuk user ini")
@@ -793,8 +823,19 @@ def getNilaiByUserId(user_id: int, services: NilaiServicesDepedencies):
 
 
 @router.get("/nilai/nama/{nama}", response_model=BaseResponse[List[ExamValuesUsers]])
-def getNilaiByNama(nama: str, services: NilaiServicesDepedencies):
-    hasil = services.getNilaiByNama(nama)
+def getNilaiByNama(
+    nama: str,
+    token: str,
+    services: NilaiServicesDepedencies,
+    session: Session = Depends(get_session),
+):
+    school_token = session.exec(
+        select(SchoolToken).where(SchoolToken.token == token)
+    ).first()
+    if not school_token:
+        raise HTTPException(status_code=400, detail="Token sekolah tidak valid")
+
+    hasil = services.getNilaiByNamaAndToken(nama, school_token.id)
 
     if not hasil:
         raise HTTPException(status_code=404, detail="Data nilai tidak ditemukan untuk nama ini")
