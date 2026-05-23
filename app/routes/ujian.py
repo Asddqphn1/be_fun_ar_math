@@ -448,13 +448,13 @@ def submit_batch(
     current_batch = exam_session.current_batch_index
     next_batch_response = None
     
-    if current_batch < 3:
+    if current_batch < 5:
         # --- GENERATE NEXT BATCH ---
         next_batch_index = current_batch + 1
         exam_session.current_batch_index = next_batch_index
         
-        # Batch 2 = 3 Soal, Batch 3 = 4 Soal
-        next_amount = 3 if next_batch_index == 2 else 4
+        # Tiap batch tepat 3 soal
+        next_amount = 3
         
         new_questions = _generate_batch_questions(
             session=session,
@@ -473,15 +473,10 @@ def submit_batch(
             is_finished=False
         )
     else:
-        # --- FINISH EXAM ---
-        exam_session.status = ExamStatusEnum.COMPLETED
-        exam_session.end_time = datetime.now()
-        message += " (UJIAN SELESAI)"
-        next_batch_response = None # Gak ada batch lagi
-
-    session.add(exam_session)
-    session.commit()
-    session.refresh(exam_session)
+        # --- FINISH EXAM (Setelah Batch 5 selesai dihajar) ---
+        session.add(exam_session)
+        session.commit()
+        session.refresh(exam_session)
 
     return SubmitBatchResponse(
         batch_index_just_finished=current_batch,
@@ -545,6 +540,20 @@ def getNilaiByUserId(user_id: int, services: NilaiServicesDepedencies):
     if not hasil:
         raise HTTPException(status_code=404, detail="Data nilai tidak ditemukan untuk user ini")
     
+    return BaseResponse(
+        success="true",
+        message="Data nilai berhasil ditemukan",
+        data=hasil
+    )
+
+
+@router.get("/nilai/nama/{nama}", response_model=BaseResponse[List[ExamValuesUsers]])
+def getNilaiByNama(nama: str, services: NilaiServicesDepedencies):
+    hasil = services.getNilaiByNama(nama)
+
+    if not hasil:
+        raise HTTPException(status_code=404, detail="Data nilai tidak ditemukan untuk nama ini")
+
     return BaseResponse(
         success="true",
         message="Data nilai berhasil ditemukan",

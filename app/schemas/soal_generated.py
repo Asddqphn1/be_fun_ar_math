@@ -13,7 +13,20 @@ class QuestionGeneratedResponse(BaseModel):
     id: int
     question_template_id: Optional[int]
     topic: str
-    difficulty: int # <--- GANTI JADI INT
+    difficulty: int
     question_text: str
     created_at: datetime
     answers: List[AnswerGeneratedResponse]
+
+# Model Pydantic untuk mapping respons dari LLM
+class AnswerAI(BaseModel):
+    label: str
+    text: str
+    is_correct: bool
+
+class QuestionAI(BaseModel):
+    question_text: str
+    answers: List[AnswerAI]
+
+class BatchQuestionsGenerated(BaseModel):
+    questions: List[QuestionAI]
