@@ -547,4 +547,18 @@ def getNilaiByUserId(user_id: int, services: NilaiServicesDepedencies):
     )
 
 
+@router.get("/nilai/nama/{nama}", response_model=BaseResponse[List[ExamValuesUsers]])
+def getNilaiByNama(nama: str, services: NilaiServicesDepedencies):
+    hasil = services.getNilaiByNama(nama)
+
+    if not hasil:
+        raise HTTPException(status_code=404, detail="Data nilai tidak ditemukan untuk nama ini")
+
+    return BaseResponse(
+        success="true",
+        message="Data nilai berhasil ditemukan",
+        data=hasil
+    )
+
+
 
