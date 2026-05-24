@@ -1,0 +1,73 @@
+{
+  "info": {
+    "name": "Fun AR - Guru (Token)",
+    "_postman_id": "8f3c2c2b-3e4b-4e6a-9e86-5c0f5c1a6b8a",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Generate Soal (SSE)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "text/event-stream"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{token}}\",\n  \"topic\": \"{{topic}}\",\n  \"difficulty\": 1\n}"
+        },
+        "url": "{{baseUrl}}/soal/buatsoal"
+      }
+    },
+    {
+      "name": "Get Nilai (All by Token)",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/ujian/nilai?token={{token}}"
+      }
+    },
+    {
+      "name": "Get Nilai by User ID (Token)",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/ujian/nilai/{{userId}}?token={{token}}"
+      }
+    },
+    {
+      "name": "Get Nilai by Nama (Token)",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/ujian/nilai/nama/{{nama}}?token={{token}}"
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "token",
+      "value": "123456"
+    },
+    {
+      "key": "topic",
+      "value": "aritmatika"
+    },
+    {
+      "key": "userId",
+      "value": "1"
+    },
+    {
+      "key": "nama",
+      "value": "budi"
+    }
+  ]
+}

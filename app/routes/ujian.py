@@ -1,4 +1,5 @@
-from typing import List
+from typing import List, Optional
+import random
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 from datetime import datetime
@@ -20,7 +21,85 @@ from app.schemas.ujian_request import (
 )
  # Import Satpam
 
-MAX_QUESTIONS = 10
+TOTAL_BATCHES = 4
+BATCH_SIZE = 10
+ROUTING_DOWN_THRESHOLD = 0.4
+ROUTING_UP_THRESHOLD = 0.8
+RAPID_GUESS_RATIO = 0.1
+TIME_LIMITS = {
+    1: {"normal": 30},
+    2: {"normal": 45},
+    3: {"normal": 60},
+}
+
+MAX_QUESTIONS = TOTAL_BATCHES * BATCH_SIZE
+
+
+def _stage1_difficulty_plan(batch_size: int) -> List[tuple[int, int]]:
+    level2_count = batch_size // 2
+    level1_count = batch_size - level2_count
+    return [(1, level1_count), (2, level2_count)]
+
+
+def _route_level(correct_count: int, valid_count: int) -> int:
+    if valid_count <= 0:
+        return 2
+    accuracy = correct_count / valid_count
+    if accuracy <= ROUTING_DOWN_THRESHOLD:
+        return 1
+    if accuracy >= ROUTING_UP_THRESHOLD:
+        return 3
+    return 2
+
+
+def _route_message(next_level: int, valid_count: int) -> str:
+    if valid_count <= 0:
+        return "Routing default ke Level 2 (data waktu belum tersedia)"
+    if next_level == 1:
+        return "Routing ke Level 1 (Mudah)"
+    if next_level == 3:
+        return "Routing ke Level 3 (Sulit)"
+    return "Routing ke Level 2 (Sedang)"
+
+
+def _build_batch_questions(
+    session: Session,
+    exam_session_id: int,
+    topic: str,
+    batch_num: int,
+    difficulty_plan: List[tuple[int, int]],
+    school_token_id: Optional[int] = None,
+):
+    questions = []
+    for difficulty, amount in difficulty_plan:
+        if amount <= 0:
+            continue
+        if school_token_id is None:
+            questions.extend(
+                _generate_batch_questions(
+                    session=session,
+                    exam_session_id=exam_session_id,
+                    topic=topic,
+                    difficulty=difficulty,
+                    amount=amount,
+                    batch_num=batch_num,
+                )
+            )
+        else:
+            questions.extend(
+                _select_existing_batch_questions(
+                    session=session,
+                    exam_session_id=exam_session_id,
+                    topic=topic,
+                    difficulty=difficulty,
+                    amount=amount,
+                    batch_num=batch_num,
+                    school_token_id=school_token_id,
+                )
+            )
+    if len(questions) > 1:
+        random.shuffle(questions)
+    return questions
 
 router = APIRouter(prefix="/ujian", tags=["Sistem Ujian"])
 
@@ -94,7 +173,7 @@ def start_exam(
         user_id=current_user.id,
         topic=request.topic,
         start_time=datetime.now(),
-        current_difficulty_level=1, # Start Level 1
+        current_difficulty_level=2, # Start Level 2 (routing stage)
         current_batch_index=1,      # Start Batch 1
         status=ExamStatusEnum.ONGOING,
         total_score=0.0
@@ -104,14 +183,13 @@ def start_exam(
     session.refresh(new_session)
     
     try:
-        # Generate BATCH 1 (3 Soal, Level 1)
-        questions = _generate_batch_questions(
+        # Generate BATCH 1 (routing stage)
+        questions = _build_batch_questions(
             session=session,
             exam_session_id=new_session.id,
             topic=request.topic,
-            difficulty=1,
-            amount=3, # Batch 1 = 3 Soal
-            batch_num=1
+            batch_num=1,
+            difficulty_plan=_stage1_difficulty_plan(BATCH_SIZE),
         )
     except Exception as e:
         # Jika AI gagal, hapus sesi ini agar tidak menggantung rusak
@@ -123,7 +201,7 @@ def start_exam(
         session_id=new_session.id,
         batch_index=1,
         questions=questions,
-        message="Batch 1 dimulai (3 Soal)",
+        message=f"Batch 1 dimulai ({BATCH_SIZE} Soal)",
         is_finished=False
     )
 
@@ -196,7 +274,7 @@ def start_exam_token(
         user_id=current_user.id,
         topic=request.topic,
         start_time=datetime.now(),
-        current_difficulty_level=1,
+        current_difficulty_level=2,
         current_batch_index=1,
         status=ExamStatusEnum.ONGOING,
         total_score=0.0,
@@ -207,13 +285,12 @@ def start_exam_token(
     session.refresh(new_session)
 
     try:
-        questions = _select_existing_batch_questions(
+        questions = _build_batch_questions(
             session=session,
             exam_session_id=new_session.id,
             topic=request.topic,
-            difficulty=1,
-            amount=3,
             batch_num=1,
+            difficulty_plan=_stage1_difficulty_plan(BATCH_SIZE),
             school_token_id=school_token.id,
         )
     except HTTPException:
@@ -229,7 +306,7 @@ def start_exam_token(
         session_id=new_session.id,
         batch_index=1,
         questions=questions,
-        message="Batch 1 dimulai (3 Soal)",
+        message=f"Batch 1 dimulai ({BATCH_SIZE} Soal)",
         is_finished=False
     )
 
@@ -447,8 +524,10 @@ def submit_batch(
 
     # 2. Proses Jawaban User
     correct_count = 0
+    valid_count = 0
     score_gained = 0.0
-    total_time = 0  # Total waktu menjawab seluruh soal di batch ini
+    total_time = 0
+    timed_count = 0
     
     for answer_item in request.answers:
         # Cari soal di DB
@@ -456,7 +535,15 @@ def submit_batch(
         if not exam_question: 
             continue # Skip kalau ID ngaco
             
-        # Cari jawaban benar di DB
+        gen_q = session.get(QuestionGenerated, exam_question.generated_question_id)
+        question_level = gen_q.difficulty if gen_q else exam_session.current_difficulty_level
+        time_limit = TIME_LIMITS.get(question_level, TIME_LIMITS[2])
+        rapid_threshold = time_limit["normal"] * RAPID_GUESS_RATIO
+        is_rapid_guess = (
+            answer_item.time_seconds > 0
+            and answer_item.time_seconds <= rapid_threshold
+        )
+
         correct_ans = session.exec(select(AnswerGenerated).where(
             AnswerGenerated.question_generated_id == exam_question.generated_question_id,
             AnswerGenerated.is_correct
@@ -465,112 +552,44 @@ def submit_batch(
         is_correct = False
         if correct_ans and correct_ans.option_label == answer_item.answer_label:
             is_correct = True
-            correct_count += 1
-            # Rumus Skor: Level * 10
-            score_gained += (exam_session.current_difficulty_level * 10)
+
+        if not is_rapid_guess:
+            valid_count += 1
+            if is_correct:
+                correct_count += 1
+                score_gained += (question_level * 10)
         
         # Update DB (termasuk waktu menjawab)
         exam_question.user_answer_label = answer_item.answer_label
         exam_question.is_correct = is_correct
         exam_question.thinking_time_seconds = answer_item.time_seconds
-        total_time += answer_item.time_seconds
+        if answer_item.time_seconds > 0:
+            total_time += answer_item.time_seconds
+            timed_count += 1
         session.add(exam_question)
     
-    # =============================================
-    # 3. Logika ADAPTIF (Akurasi + Waktu) 🧠⏱️
-    # =============================================
-    prev_batch_size = len(request.answers)
-    accuracy = correct_count / prev_batch_size if prev_batch_size > 0 else 0
-    avg_time = total_time / prev_batch_size if prev_batch_size > 0 else 0
-    
-    # Batas waktu per soal berdasarkan level (dalam detik)
-    # Level makin tinggi = soal makin susah = waktu wajar makin lama
-    TIME_LIMITS = {
-        1: {"cepat": 15, "normal": 30, "lambat": 60},   # Easy
-        2: {"cepat": 20, "normal": 45, "lambat": 90},   # Medium
-        3: {"cepat": 30, "normal": 60, "lambat": 120},  # Hard
-    }
-    
-    current_level = exam_session.current_difficulty_level
-    time_limit = TIME_LIMITS.get(current_level, TIME_LIMITS[1])
-    
-    # --- Bonus Skor: Jawab benar + cepat = bonus poin ---
+    avg_time = total_time / timed_count if timed_count > 0 else 0
     time_bonus = 0.0
-    if correct_count > 0 and avg_time <= time_limit["normal"]:
-        # Bonus = 5 poin per jawaban benar kalau waktu di bawah normal
-        time_bonus = correct_count * 5
-        if avg_time <= time_limit["cepat"]:
-            # Bonus ekstra kalau sangat cepat
-            time_bonus = correct_count * 10
-        score_gained += time_bonus
-    
-    # Update Total Skor Sesi
+
     exam_session.total_score += score_gained
-    
-    # --- Aturan Adaptif Gabungan (Akurasi + Waktu) ---
-    #
-    # | Akurasi     | Waktu               | Keputusan                              |
-    # |-------------|----------------------|----------------------------------------|
-    # | >= 60%      | <= normal            | NAIK LEVEL (paham & lancar)            |
-    # | >= 60%      | > normal             | TETAP (benar tapi belum lancar)        |
-    # | 30% - 60%   | <= cepat             | TURUN (terlalu cepat = asal jawab)     |
-    # | 30% - 60%   | > cepat              | TETAP (perlu latihan lagi)             |
-    # | < 30%       | apapun               | TURUN LEVEL                            |
-    
-    message = "Level Tetap"
-    
-    if accuracy >= 0.6:
-        if avg_time <= time_limit["normal"]:
-            # Benar banyak + cepat/normal = paham materi → Naik Level
-            if exam_session.current_difficulty_level < 3:
-                exam_session.current_difficulty_level += 1
-                if avg_time <= time_limit["cepat"]:
-                    message = "Luar biasa! Jawab cepat & tepat! Level Naik! 🚀🔥"
-                else:
-                    message = "Bagus! Level Naik! 🚀"
-        else:
-            # Benar banyak tapi lambat = belum lancar → Tetap
-            message = "Jawaban bagus, tapi coba percepat waktumu! ⏱️"
-    
-    elif accuracy > 0.3:
-        if avg_time <= time_limit["cepat"]:
-            # Akurasi sedang + terlalu cepat = asal jawab → Turun Level
-            if exam_session.current_difficulty_level > 1:
-                exam_session.current_difficulty_level -= 1
-                message = "Jangan terburu-buru menjawab! Level Turun 🔻"
-            else:
-                message = "Pelan-pelan, baca soalnya dengan teliti! ⚠️"
-        else:
-            # Akurasi sedang + waktu wajar → Tetap
-            message = "Terus berlatih, kamu pasti bisa! 💪"
-    
-    else:
-        # Akurasi rendah → Turun Level (apapun waktunya)
-        if exam_session.current_difficulty_level > 1:
-            exam_session.current_difficulty_level -= 1
-            message = "Level Turun, ayo fokus lagi! 🔻"
-        else:
-            message = "Jangan menyerah, coba lagi! 💪"
+    next_level = _route_level(correct_count, valid_count)
+    exam_session.current_difficulty_level = next_level
+    message = _route_message(next_level, valid_count)
 
     # 4. Tentukan Nasib Selanjutnya (Next Batch atau Finish?)
     current_batch = exam_session.current_batch_index
     next_batch_response = None
     
-    if current_batch < 5:
-        # --- GENERATE NEXT BATCH ---
+    if current_batch < TOTAL_BATCHES:
         next_batch_index = current_batch + 1
         exam_session.current_batch_index = next_batch_index
-        
-        # Tiap batch tepat 3 soal
-        next_amount = 3
-        
-        new_questions = _generate_batch_questions(
+
+        new_questions = _build_batch_questions(
             session=session,
             exam_session_id=exam_session.id,
             topic=exam_session.topic,
-            difficulty=exam_session.current_difficulty_level,
-            amount=next_amount,
-            batch_num=next_batch_index
+            batch_num=next_batch_index,
+            difficulty_plan=[(exam_session.current_difficulty_level, BATCH_SIZE)],
         )
         
         next_batch_response = ExamBatchResponse(
@@ -581,7 +600,7 @@ def submit_batch(
             is_finished=False
         )
     else:
-        # --- FINISH EXAM (Setelah Batch 5 selesai dihajar) ---
+        # --- FINISH EXAM ---
         session.add(exam_session)
         session.commit()
         session.refresh(exam_session)
@@ -625,13 +644,24 @@ def submit_batch_token(
         raise HTTPException(status_code=403, detail="Token sekolah tidak sesuai dengan sesi ini")
 
     correct_count = 0
+    valid_count = 0
     score_gained = 0.0
     total_time = 0
+    timed_count = 0
 
     for answer_item in request.answers:
         exam_question = session.get(ExamQuestion, answer_item.exam_question_id)
         if not exam_question:
             continue
+
+        gen_q = session.get(QuestionGenerated, exam_question.generated_question_id)
+        question_level = gen_q.difficulty if gen_q else exam_session.current_difficulty_level
+        time_limit = TIME_LIMITS.get(question_level, TIME_LIMITS[2])
+        rapid_threshold = time_limit["normal"] * RAPID_GUESS_RATIO
+        is_rapid_guess = (
+            answer_item.time_seconds > 0
+            and answer_item.time_seconds <= rapid_threshold
+        )
 
         correct_ans = session.exec(select(AnswerGenerated).where(
             AnswerGenerated.question_generated_id == exam_question.generated_question_id,
@@ -641,83 +671,42 @@ def submit_batch_token(
         is_correct = False
         if correct_ans and correct_ans.option_label == answer_item.answer_label:
             is_correct = True
-            correct_count += 1
-            score_gained += (exam_session.current_difficulty_level * 10)
+
+        if not is_rapid_guess:
+            valid_count += 1
+            if is_correct:
+                correct_count += 1
+                score_gained += (question_level * 10)
 
         exam_question.user_answer_label = answer_item.answer_label
         exam_question.is_correct = is_correct
         exam_question.thinking_time_seconds = answer_item.time_seconds
-        total_time += answer_item.time_seconds
+        if answer_item.time_seconds > 0:
+            total_time += answer_item.time_seconds
+            timed_count += 1
         session.add(exam_question)
 
-    prev_batch_size = len(request.answers)
-    accuracy = correct_count / prev_batch_size if prev_batch_size > 0 else 0
-    avg_time = total_time / prev_batch_size if prev_batch_size > 0 else 0
-
-    TIME_LIMITS = {
-        1: {"cepat": 15, "normal": 30, "lambat": 60},
-        2: {"cepat": 20, "normal": 45, "lambat": 90},
-        3: {"cepat": 30, "normal": 60, "lambat": 120},
-    }
-
-    current_level = exam_session.current_difficulty_level
-    time_limit = TIME_LIMITS.get(current_level, TIME_LIMITS[1])
-
+    avg_time = total_time / timed_count if timed_count > 0 else 0
     time_bonus = 0.0
-    if correct_count > 0 and avg_time <= time_limit["normal"]:
-        time_bonus = correct_count * 5
-        if avg_time <= time_limit["cepat"]:
-            time_bonus = correct_count * 10
-        score_gained += time_bonus
 
     exam_session.total_score += score_gained
-
-    message = "Level Tetap"
-
-    if accuracy >= 0.6:
-        if avg_time <= time_limit["normal"]:
-            if exam_session.current_difficulty_level < 3:
-                exam_session.current_difficulty_level += 1
-                if avg_time <= time_limit["cepat"]:
-                    message = "Luar biasa! Jawab cepat & tepat! Level Naik! 🚀🔥"
-                else:
-                    message = "Bagus! Level Naik! 🚀"
-        else:
-            message = "Jawaban bagus, tapi coba percepat waktumu! ⏱️"
-
-    elif accuracy > 0.3:
-        if avg_time <= time_limit["cepat"]:
-            if exam_session.current_difficulty_level > 1:
-                exam_session.current_difficulty_level -= 1
-                message = "Jangan terburu-buru menjawab! Level Turun 🔻"
-            else:
-                message = "Pelan-pelan, baca soalnya dengan teliti! ⚠️"
-        else:
-            message = "Terus berlatih, kamu pasti bisa! 💪"
-
-    else:
-        if exam_session.current_difficulty_level > 1:
-            exam_session.current_difficulty_level -= 1
-            message = "Level Turun, ayo fokus lagi! 🔻"
-        else:
-            message = "Jangan menyerah, coba lagi! 💪"
+    next_level = _route_level(correct_count, valid_count)
+    exam_session.current_difficulty_level = next_level
+    message = _route_message(next_level, valid_count)
 
     current_batch = exam_session.current_batch_index
     next_batch_response = None
 
-    if current_batch < 5:
+    if current_batch < TOTAL_BATCHES:
         next_batch_index = current_batch + 1
         exam_session.current_batch_index = next_batch_index
 
-        next_amount = 3
-
-        new_questions = _select_existing_batch_questions(
+        new_questions = _build_batch_questions(
             session=session,
             exam_session_id=exam_session.id,
             topic=exam_session.topic,
-            difficulty=exam_session.current_difficulty_level,
-            amount=next_amount,
             batch_num=next_batch_index,
+            difficulty_plan=[(exam_session.current_difficulty_level, BATCH_SIZE)],
             school_token_id=exam_session.school_token_id,
         )
 

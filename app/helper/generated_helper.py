@@ -94,6 +94,7 @@ def _generate_batch_questions(
         exam_q = ExamQuestion(
             exam_session_id=exam_session_id,
             generated_question_id=new_gen_question.id,
+            batch_number=batch_num,
             status="UNANSWERED"
         )
         session.add(exam_q)
@@ -122,21 +123,11 @@ def _select_existing_batch_questions(
     batch_num: int,
     school_token_id: int,
 ):
-    # Ambil semua ID soal yang sudah dipakai di sesi ini
-    used_ids = session.exec(
-        select(ExamQuestion.generated_question_id).where(
-            ExamQuestion.exam_session_id == exam_session_id
-        )
-    ).all()
-
     statement = select(QuestionGenerated).where(
         QuestionGenerated.topic == topic,
         QuestionGenerated.difficulty == difficulty,
         QuestionGenerated.school_token_id == school_token_id,
     )
-
-    if used_ids:
-        statement = statement.where(QuestionGenerated.id.notin_(used_ids))
 
     available_questions = session.exec(statement).all()
 
@@ -146,10 +137,10 @@ def _select_existing_batch_questions(
             detail=f"Bank soal kosong untuk topik {topic} (level {difficulty})",
         )
 
-    if len(available_questions) <= amount:
-        selected_questions = available_questions
-    else:
+    if len(available_questions) >= amount:
         selected_questions = random.sample(available_questions, amount)
+    else:
+        selected_questions = random.choices(available_questions, k=amount)
 
     formatted_questions_for_frontend = []
 

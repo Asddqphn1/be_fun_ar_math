@@ -44,7 +44,7 @@ class AnswerItem(BaseModel):
 
 class SubmitBatchRequest(BaseModel):
     session_id: int
-    answers: List[AnswerItem] # List jawaban user (3 atau 4 item)
+    answers: List[AnswerItem] # List jawaban user (10-12 item)
 
 class SubmitBatchTokenRequest(SubmitBatchRequest):
     token: str = Field(pattern=r"^\d{6}$")
