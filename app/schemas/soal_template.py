@@ -1,10 +1,15 @@
 from typing import List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import OptionLabelEnum
 
 
 class GenerateRequest(BaseModel):
+    topic: str
+    difficulty: int
+
+class GenerateBulkRequest(BaseModel):
+    token: str = Field(pattern=r"^\d{6}$")
     topic: str
     difficulty: int
 

@@ -1,18 +1,13 @@
 import logging
-from typing import List
 import random
 from fastapi import HTTPException
-from sqlmodel import Session, select
-import concurrent.futures
+from sqlmodel import select
 
 from app.models import (
     AnswerGenerated, ExamQuestion, OptionLabelEnum, QuestionGenerated, 
     QuestionTemplate
 )
 
-from app.schemas.ujian_request import (
-    QuestionItem, OptionResponse,
-)
 from app.services.ai_service import generate_soal_with_ai 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +94,7 @@ def _generate_batch_questions(
         exam_q = ExamQuestion(
             exam_session_id=exam_session_id,
             generated_question_id=new_gen_question.id,
+            batch_number=batch_num,
             status="UNANSWERED"
         )
         session.add(exam_q)
@@ -115,4 +111,67 @@ def _generate_batch_questions(
     # COMMIT SATU KALI DI AKHIR
     session.commit()
         
+    return formatted_questions_for_frontend
+
+
+def _select_existing_batch_questions(
+    session,
+    exam_session_id: int,
+    topic: str,
+    difficulty: int,
+    amount: int,
+    batch_num: int,
+    school_token_id: int,
+):
+    statement = select(QuestionGenerated).where(
+        QuestionGenerated.topic == topic,
+        QuestionGenerated.difficulty == difficulty,
+        QuestionGenerated.school_token_id == school_token_id,
+    )
+
+    available_questions = session.exec(statement).all()
+
+    if not available_questions:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Bank soal kosong untuk topik {topic} (level {difficulty})",
+        )
+
+    if len(available_questions) >= amount:
+        selected_questions = random.sample(available_questions, amount)
+    else:
+        selected_questions = random.choices(available_questions, k=amount)
+
+    formatted_questions_for_frontend = []
+
+    for gen_q in selected_questions:
+        answers_db = session.exec(
+            select(AnswerGenerated).where(
+                AnswerGenerated.question_generated_id == gen_q.id
+            )
+        ).all()
+
+        random.shuffle(answers_db)
+        formatted_options = [
+            {"label": a.option_label, "text": a.option_text} for a in answers_db
+        ]
+
+        exam_q = ExamQuestion(
+            exam_session_id=exam_session_id,
+            generated_question_id=gen_q.id,
+            batch_number=batch_num,
+        )
+        session.add(exam_q)
+        session.flush()
+
+        formatted_questions_for_frontend.append(
+            {
+                "exam_question_id": exam_q.id,
+                "text": gen_q.question_text,
+                "difficulty": gen_q.difficulty,
+                "options": formatted_options,
+            }
+        )
+
+    session.commit()
     return formatted_questions_for_frontend

@@ -31,6 +31,19 @@ class User(SQLModel, table=True):
     exam_sessions: List["ExamSession"] = Relationship(back_populates="user")
 
 # ==========================================
+# 1B. SCHOOL TOKEN (Relasi Soal & Ujian)
+# ==========================================
+class SchoolToken(SQLModel, table=True):
+    __tablename__ = "school_tokens"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    school_name: str = Field(max_length=255)
+    token: str = Field(max_length=6, index=True, unique=True)
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    generated_questions: List["QuestionGenerated"] = Relationship(back_populates="school_token")
+    exam_sessions: List["ExamSession"] = Relationship(back_populates="school_token")
+
+# ==========================================
 # 2. TEMPLATE SOAL (Data Mentah Guru)
 # ==========================================
 class QuestionTemplate(SQLModel, table=True):
@@ -68,9 +81,12 @@ class QuestionGenerated(SQLModel, table=True):
     
     question_text: str = Field(sa_type=Text)
     created_at: datetime = Field(default_factory=datetime.now)
+
+    school_token_id: Optional[int] = Field(default=None, foreign_key="school_tokens.id")
     
     template: Optional[QuestionTemplate] = Relationship(back_populates="generated_questions")
     answers: List["AnswerGenerated"] = Relationship(back_populates="question")
+    school_token: Optional["SchoolToken"] = Relationship(back_populates="generated_questions")
     
     # Relasi ke History Ujian (Soal ini pernah dipakai di sesi mana aja?)
     exam_questions: List["ExamQuestion"] = Relationship(back_populates="question_generated")
@@ -96,6 +112,8 @@ class ExamSession(SQLModel, table=True):
     end_time: Optional[datetime] = Field(default=None) # Null kalau belum selesai
     current_difficulty_level: int = Field(default=1)
     topic: str = Field(max_length=100)
+
+    school_token_id: Optional[int] = Field(default=None, foreign_key="school_tokens.id")
     
     status: ExamStatusEnum = Field(default=ExamStatusEnum.ONGOING)
     total_score: float = Field(default=0.0)
@@ -103,6 +121,7 @@ class ExamSession(SQLModel, table=True):
     
     user: Optional[User] = Relationship(back_populates="exam_sessions")
     exam_questions: List["ExamQuestion"] = Relationship(back_populates="exam_session")
+    school_token: Optional["SchoolToken"] = Relationship(back_populates="exam_sessions")
 
 class ExamQuestion(SQLModel, table=True):
     """
