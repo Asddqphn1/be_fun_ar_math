@@ -103,6 +103,7 @@ class DataUser(BaseModel):
     email : str
 
 class ExamValuesUsers(BaseModel):
+    id: int  # session_id — guna ni untuk call /nilai/detail/{session_id}
     start_time : datetime
     end_time : datetime
     topic : str
