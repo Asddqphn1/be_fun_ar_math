@@ -46,6 +46,26 @@
         "method": "GET",
         "url": "{{baseUrl}}/ujian/nilai/nama/{{nama}}?token={{token}}"
       }
+    },
+    {
+      "name": "Get Detail Nilai (per Sesi)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/ujian/nilai/detail/{{sessionId}}?token={{token}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["ujian", "nilai", "detail", "{{sessionId}}"],
+          "query": [
+            {
+              "key": "token",
+              "value": "{{token}}",
+              "description": "Token sekolah (6 digit)"
+            }
+          ]
+        },
+        "description": "Menampilkan detail lengkap per sesi ujian:\n- Setiap soal yang didapatkan user\n- Jawaban yang dipilih user + teksnya\n- Apakah jawaban benar atau salah\n- Jawaban benar (label + teks)\n- Waktu berpikir per soal\n- Statistik: total benar, salah, akurasi %"
+      }
     }
   ],
   "variable": [
@@ -68,6 +88,10 @@
     {
       "key": "nama",
       "value": "budi"
+    },
+    {
+      "key": "sessionId",
+      "value": "1"
     }
   ]
 }

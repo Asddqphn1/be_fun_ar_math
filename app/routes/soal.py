@@ -11,7 +11,12 @@ from app.database import get_session
 from app.models import AnswerGenerated, OptionLabelEnum, QuestionGenerated, QuestionTemplate, SchoolToken
 from app.schemas.soal_generated import QuestionGeneratedResponse
 from app.schemas.soal_template import GenerateBulkRequest, GenerateRequest, QuestionResponse
-from app.services.ai_service import generate_soal_with_ai, parse_bulk_questions, stream_bulk_soal_with_ai
+from app.services.ai_service import (
+    ThinkTagStreamParser,
+    generate_soal_with_ai,
+    parse_bulk_questions,
+    stream_bulk_soal_with_ai,
+)
 
 
 
@@ -206,6 +211,7 @@ def generate_bulk_questions(
                         )
 
                         content_parts = []
+                        think_parser = ThinkTagStreamParser()
                         async for chunk in stream_bulk_soal_with_ai(
                             template,
                             total_questions=batch_total,
@@ -219,10 +225,34 @@ def generate_bulk_questions(
 
                             token = chunk.get("text")
                             if token:
-                                content_parts.append(token)
+                                for segment, in_think in think_parser.feed(token):
+                                    if not segment:
+                                        continue
+                                    if in_think:
+                                        yield _sse_event(
+                                            "think",
+                                            {"text": segment, "difficulty": level},
+                                        )
+                                    else:
+                                        content_parts.append(segment)
+                                        yield _sse_event(
+                                            "answer",
+                                            {"text": segment, "difficulty": level},
+                                        )
+
+                        for segment, in_think in think_parser.flush():
+                            if not segment:
+                                continue
+                            if in_think:
                                 yield _sse_event(
-                                    "token",
-                                    {"text": token, "difficulty": level},
+                                    "think",
+                                    {"text": segment, "difficulty": level},
+                                )
+                            else:
+                                content_parts.append(segment)
+                                yield _sse_event(
+                                    "answer",
+                                    {"text": segment, "difficulty": level},
                                 )
 
                         content = "".join(content_parts)

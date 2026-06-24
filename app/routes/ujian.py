@@ -17,7 +17,8 @@ from app.schemas.ujian_request import (
     SubmitBatchRequest, 
     SubmitBatchTokenRequest,
     SubmitBatchResponse, 
-    ExamValuesUsers
+    ExamValuesUsers,
+    ExamDetailResponse
 )
  # Import Satpam
 
@@ -835,5 +836,42 @@ def getNilaiByNama(
         data=hasil
     )
 
+
+@router.get("/nilai/detail/{session_id}", response_model=BaseResponse[ExamDetailResponse])
+def getNilaiDetail(
+    session_id: int,
+    token: str,
+    services: NilaiServicesDepedencies,
+    session: Session = Depends(get_session),
+):
+    """
+    Endpoint detail nilai per sesi ujian.
+    Menampilkan:
+    - Setiap soal yang didapatkan user
+    - Jawaban yang dipilih user
+    - Apakah jawaban benar atau salah
+    - Jawaban yang benar (selalu ditampilkan)
+    - Waktu berpikir per soal
+    - Statistik: total benar, total salah, akurasi %
+    """
+    school_token = session.exec(
+        select(SchoolToken).where(SchoolToken.token == token)
+    ).first()
+    if not school_token:
+        raise HTTPException(status_code=400, detail="Token sekolah tidak valid")
+
+    hasil = services.getNilaiDetail(session_id, school_token.id)
+
+    if not hasil:
+        raise HTTPException(
+            status_code=404,
+            detail="Sesi ujian tidak ditemukan atau belum selesai"
+        )
+
+    return BaseResponse(
+        success="true",
+        message="Detail nilai berhasil ditemukan",
+        data=hasil
+    )
 
 

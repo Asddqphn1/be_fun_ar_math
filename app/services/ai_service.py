@@ -392,6 +392,86 @@ def _extract_reasoning_details(chunk: Any) -> Optional[Any]:
     return None
 
 
+_THINK_OPEN_TAG = "<think>"
+_THINK_CLOSE_TAG = "</think>"
+
+
+def _partial_tag_suffix_len(text: str) -> int:
+    if not text:
+        return 0
+
+    max_len = 0
+    for tag in (_THINK_OPEN_TAG, _THINK_CLOSE_TAG):
+        max_prefix = min(len(tag) - 1, len(text))
+        for length in range(1, max_prefix + 1):
+            if text.endswith(tag[:length]):
+                max_len = max(max_len, length)
+
+    return max_len
+
+
+class ThinkTagStreamParser:
+    """Stream parser that splits text inside and outside <think> tags."""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._in_think = False
+
+    @property
+    def in_think(self) -> bool:
+        return self._in_think
+
+    def feed(self, chunk: str) -> List[Tuple[str, bool]]:
+        if not chunk:
+            return []
+
+        data = f"{self._buffer}{chunk}"
+        self._buffer = ""
+        segments: List[Tuple[str, bool]] = []
+        idx = 0
+
+        while True:
+            open_idx = data.find(_THINK_OPEN_TAG, idx)
+            close_idx = data.find(_THINK_CLOSE_TAG, idx)
+
+            if open_idx == -1 and close_idx == -1:
+                break
+
+            if open_idx == -1 or (close_idx != -1 and close_idx < open_idx):
+                tag_idx = close_idx
+                tag_len = len(_THINK_CLOSE_TAG)
+                next_state = False
+            else:
+                tag_idx = open_idx
+                tag_len = len(_THINK_OPEN_TAG)
+                next_state = True
+
+            if tag_idx > idx:
+                segments.append((data[idx:tag_idx], self._in_think))
+
+            self._in_think = next_state
+            idx = tag_idx + tag_len
+
+        tail = data[idx:]
+        if tail:
+            keep = _partial_tag_suffix_len(tail)
+            if keep:
+                self._buffer = tail[-keep:]
+                tail = tail[:-keep]
+            if tail:
+                segments.append((tail, self._in_think))
+
+        return segments
+
+    def flush(self) -> List[Tuple[str, bool]]:
+        if not self._buffer:
+            return []
+
+        leftover = self._buffer
+        self._buffer = ""
+        return [(leftover, self._in_think)]
+
+
 def iter_generate_bulk_questions(
     templates: List[QuestionTemplate],
     total_questions: int = 100,

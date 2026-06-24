@@ -63,6 +63,40 @@ class SubmitBatchResponse(BaseModel):
     # Data Batch Berikutnya (Kalau belum selesai)
     next_batch: Optional[ExamBatchResponse] = None
 
+# --- SCHEMA DETAIL NILAI (Review Soal per Sesi) ---
+class CorrectAnswerDetail(BaseModel):
+    """Detail jawaban yang benar (ditampilkan kalau user salah)"""
+    label: str
+    text: str
+
+class QuestionDetailItem(BaseModel):
+    """Detail per soal: soal, jawaban user, benar/salah, dan koreksi"""
+    exam_question_id: int
+    question_text: str
+    difficulty: int
+    batch_number: int
+    options: List[OptionResponse]
+    user_answer_label: Optional[str] = None
+    user_answer_text: Optional[str] = None
+    is_correct: bool
+    correct_answer: CorrectAnswerDetail  # Selalu ditampilkan
+    thinking_time_seconds: int = 0
+
+class ExamDetailResponse(BaseModel):
+    """Response lengkap detail nilai per sesi ujian"""
+    session_id: int
+    topic: str
+    status: str
+    total_score: float
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    user: "DataUser"
+    total_questions: int
+    total_correct: int
+    total_wrong: int
+    accuracy_percent: float
+    questions: List[QuestionDetailItem]
+
 # ... Schema User/Nilai lama tetep ada di bawah ...
 class DataUser(BaseModel):
     full_name : str
